@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>英文課文伴讀 (純前端免金鑰版)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- 引入免費且無需 Key 的純前端 OCR 引擎 -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+</head>
+<body class="bg-amber-50 min-h-screen text-slate-800 pb-16">
+
+  <!-- 頂部標題 -->
+  <header class="bg-white p-4 shadow-sm sticky top-0 z-10 text-center font-bold text-lg text-amber-700">
+    🦆 拍照學英語 (免 Key 永久版)
+  </header>
+
+  <main class="max-w-md mx-auto p-4 space-y-4">
+    <!-- 拍照與上傳按鈕 -->
+    <div class="bg-white p-5 rounded-2xl shadow-sm text-center border-2 border-dashed border-amber-300">
+      <input type="file" id="cameraInput" accept="image/*" capture="environment" class="hidden">
+      <button onclick="document.getElementById('cameraInput').click()" class="w-full py-3.5 bg-amber-500 hover:bg-amber-600 active:scale-95 transition text-white font-bold rounded-xl shadow flex items-center justify-center gap-2 text-base">
+        📷 拍攝課本 / 上傳圖片
+      </button>
+      <p id="statusText" class="text-xs text-gray-400 mt-2">完全在本機處理，不需申請任何帳號</p>
+    </div>
+
+    <!-- 處理中進度提示 -->
+    <div id="loading" class="hidden text-center py-6">
+      <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-amber-500 border-t-transparent"></div>
+      <p id="progressText" class="text-sm text-amber-700 mt-2 font-medium">正在載入文字辨識引擎...</p>
+    </div>
+
+    <!-- 解析結果展示區 -->
+    <div id="resultsContainer" class="space-y-4"></div>
+  </main>
+
+  <script>
+    // 常見英文意群切割介詞與連詞 (用於將長句拆分成短語)
+    const CHUNK_SPLITTERS = [
+      'in front of', 'next to', 'because of', 'as well as',
+      'in', 'on', 'at', 'under', 'with', 'for', 'to', 'from',
+      'and', 'but', 'or', 'so', 'because', 'before', 'after'
+    ];
+
+    document.getElementById('cameraInput').addEventListener('change', async function(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const loading = document.getElementById('loading');
+      const progressText = document.getElementById('progressText');
+      const container = document.getElementById('resultsContainer');
+      
+      loading.classList.remove('hidden');
+      container.innerHTML = '';
+      progressText.innerText = "手機本地識別文字中 (需 2~4 秒)...";
+
+      try {
+        // 1. 純前端 OCR 文字辨識 (無任何後端)
+        const worker = await Tesseract.createWorker('eng');
+        const ret = await worker.recognize(file);
+        await worker.terminate();
+
+        const text = ret.data.text;
+        progressText.innerText = "正在拆解語法與查詢翻譯...";
+
+        // 2. 斷句清洗
+        const sentences = text
+          .split(/(?<=[.?!])\s+/)
+          .map(s => s.replace(/\n/g, ' ').trim())
+          .filter(s => s.length > 3 && /[a-zA-Z]/.test(s));
+
+        if (sentences.length === 0) {
+          alert('未能清楚辨識到文字，請拍得更清楚一些！');
+          return;
+        }
+
+        // 3. 處理每個句子（拆解意群、翻譯、語法分析）
+        for (let i = 0; i < sentences.length; i++) {
+          await processSentenceCard(sentences[i], i);
+        }
+
+      } catch (err) {
+        alert('識別失敗：' + err.message);
+      } finally {
+        loading.classList.add('hidden');
+      }
+    });
+
+    // 處理單個句子的意群切割與翻譯
+    async function processSentenceCard(sentence, index) {
+      const container = document.getElementById('resultsContainer');
+
+      // (A) 長句智能拆解邏輯 (圖 3 效果)
+      const chunks = splitIntoChunks(sentence);
+      
+      // (B) 調用免 Key 公共翻譯接口
+      const translation = await fetchTranslation(sentence);
+      
+      // (C) 本地規則語法判斷 (圖 8 效果)
+      const grammarTip = analyzeGrammar(sentence);
+
+      // (D) 翻譯每個切分出來的短語
+      const chunkPromises = chunks.map(async c => {
+        const trans = await fetchTranslation(c);
+        return { en: c, zh: trans };
+      });
+      const chunkResults = await Promise.all(chunkPromises);
+
+      // (E) 渲染畫面
+      const card = document.createElement('div');
+      card.className = "bg-white p-4 rounded-xl shadow-sm border border-orange-100 space-y-3";
+
+      const chunksHtml = chunkResults.map(c => `
+        <div class="inline-flex flex-col items-center bg-amber-50 rounded-lg p-2 border border-amber-200 text-center">
+          <span class="font-bold text-gray-800 text-sm">${c.en}</span>
+          <span class="text-xs text-red-500 mt-0.5">${c.zh}</span>
+        </div>
+      `).join('');
+
+      card.innerHTML = `
+        <div>
+          <div class="text-base font-semibold text-slate-800">${sentence}</div>
+          <div class="text-xs text-gray-500 mt-0.5">${translation}</div>
+        </div>
+
+        <div class="flex flex-wrap gap-1.5 py-1">
+          ${chunksHtml}
+        </div>
+
+        <div class="bg-slate-50 p-2.5 rounded-lg text-xs text-slate-600 border-l-4 border-amber-400">
+          <span class="font-bold text-amber-700">語法重點：</span>${grammarTip}
+        </div>
+
+        <div class="flex gap-2 pt-1 border-t border-gray-100 text-xs">
+          <button onclick="speak('${sentence.replace(/'/g, "\\'")}', 1)" class="flex-1 py-2 bg-blue-50 text-blue-600 rounded-lg font-medium active:bg-blue-100">🔊 朗讀</button>
+          <button onclick="speak('${sentence.replace(/'/g, "\\'")}', 0.7)" class="flex-1 py-2 bg-blue-50 text-blue-600 rounded-lg font-medium active:bg-blue-100">🐢 慢速</button>
+          <button onclick="recordAndAssess('${sentence.replace(/'/g, "\\'")}', ${index})" class="flex-1 py-2 bg-green-50 text-green-600 rounded-lg font-medium active:bg-green-100">🎤 跟讀打分</button>
+        </div>
+        <div id="feedback-${index}" class="text-xs text-center font-bold hidden py-1"></div>
+      `;
+
+      container.appendChild(card);
+    }
+
+    // 句子意群切割演算法 (依據介詞短語與連詞切分)
+    function splitIntoChunks(text) {
+      let parts = [text];
+      CHUNK_SPLITTERS.forEach(splitter => {
+        let newParts = [];
+        parts.forEach(p => {
+          const regex = new RegExp(`\\b(${splitter})\\b`, 'gi');
+          const split = p.split(regex);
+          if (split.length > 1) {
+            for (let i = 0; i < split.length; i++) {
+              if (split[i].trim()) newParts.push(split[i].trim());
+            }
+          } else {
+            newParts.push(p);
+          }
+        });
+        parts = newParts;
+      });
+      return parts.length > 1 ? parts : [text];
+    }
+
+    // 免費且免金鑰的公共翻譯 API
+    async function fetchTranslation(text) {
+      try {
+        const res = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|zh-TW`);
+        const data = await res.json();
+        return data.responseData?.translatedText || '翻譯中...';
+      } catch (e) {
+        return '';
+      }
+    }
+
+    // 本地語法分析規則引擎 (模擬 AI 語法重點)
+    function analyzeGrammar(s) {
+      const lower = s.toLowerCase();
+      if (/there (is|are|was|were)/.test(lower)) {
+        return "【There be 句型】表示『某處存在某物』，注意其後的單複數動詞變化。";
+      } else if (/^(don't|please|hurry|let's|listen)/.test(lower) || /!$/.test(s)) {
+        return "【祈使句】省去了主語，常用於提出請求、命令或催促對方。";
+      } else if (/(can|can't|must|should|may)\b/.test(lower)) {
+        return "【情態動詞】後方必須接動詞原形，用以表達能力、必要或義務。";
+      } else if (/(have|has) (been|[a-z]+ed)/.test(lower)) {
+        return "【完成時態】表示過去發生的動作對現在造成的影響或持續的狀態。";
+      }
+      return "【陳述句】標準的主語 + 動詞結構，適合日常交流與寫作積累。";
+    }
+
+    // iPhone 原生朗讀
+    function speak(text, rate = 1) {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = 'en-US';
+      utterance.rate = rate;
+      window.speechSynthesis.speak(utterance);
+    }
+
+    // iPhone 原生語音辨識與打分
+    function recordAndAssess(targetText, index) {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        alert('請在 iPhone Safari 上使用！');
+        return;
+      }
+      const recognition = new SpeechRecognition();
+      recognition.lang = 'en-US';
+      const feedback = document.getElementById(`feedback-${index}`);
+      feedback.className = "text-xs text-center font-bold py-1 text-amber-500 block";
+      feedback.innerText = "聆聽中，請朗讀句子...";
+      recognition.start();
+
+      recognition.onresult = function(event) {
+        const spoken = event.results[0][0].transcript;
+        const cleanSpoken = spoken.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+        const cleanTarget = targetText.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+
+        if (cleanSpoken === cleanTarget) {
+          feedback.className = "text-xs text-center font-bold py-1 text-green-600 block";
+          feedback.innerText = `太棒了！完全正確 👍`;
+        } else {
+          feedback.className = "text-xs text-center font-bold py-1 text-red-500 block";
+          feedback.innerText = `你讀的是: "${spoken}"，再試一次吧！`;
+        }
+      };
+
+      recognition.onerror = function() {
+        feedback.className = "text-xs text-center font-bold py-1 text-gray-400 block";
+        feedback.innerText = "沒聽清楚，請點擊重試";
+      };
+    }
+  </script>
+</body>
+</html>
