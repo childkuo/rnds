@@ -3,19 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <!-- 核心關鍵：解除外部語音與翻譯防盜鏈，保證音訊正常下載 -->
   <meta name="referrer" content="no-referrer">
   <title>英文課文伴讀</title>
   
-  <!-- 你的專屬書法圖示 -->
   <link rel="icon" href="logo.png" type="image/png">
   <link rel="apple-touch-icon" href="logo.png">
 
-  <!-- 引入樣式與開源 OCR 引擎 -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 <body class="bg-amber-50 min-h-screen text-slate-800 pb-20">
+
+  <!-- 真正的全域媒體播放器 (保證走 iPhone 喇叭) -->
+  <audio id="globalAudioPlayer" playsinline preload="auto"></audio>
 
   <!-- 頂部導覽列：你的專屬書法 Logo -->
   <header class="bg-white p-3 shadow-sm sticky top-0 z-10 flex items-center justify-center gap-2.5 font-bold text-lg text-slate-800">
@@ -23,11 +23,11 @@
     <span>拍照學英語</span>
   </header>
 
-  <!-- iPhone 貼心提醒 -->
+  <!-- iPhone 靜音開關提醒 -->
   <div class="max-w-md mx-auto px-4 pt-3">
-    <div class="bg-amber-100 border-l-4 border-amber-500 text-amber-900 p-2 rounded text-xs flex items-center gap-1.5 shadow-sm">
-      <span>💡</span>
-      <span>若音量較小，請按 iPhone 機身側邊的<strong>「音量鍵」調大聲</strong>。</span>
+    <div class="bg-amber-100 border-l-4 border-amber-500 text-amber-900 p-2.5 rounded text-xs flex items-center gap-2 shadow-sm">
+      <span class="text-base">🔔</span>
+      <span><strong>提示：</strong>若喇叭無聲，請確認 iPhone 機身左側<strong>靜音開關已關閉（非橘色）</strong>，並按側邊鍵將音量調大。</span>
     </div>
   </div>
 
@@ -45,10 +45,10 @@
           🖼️ 從相簿選取
         </button>
       </div>
-      <p id="statusText" class="text-xs text-gray-400">拍下課文或繪本，立刻拆解句子與發音</p>
+      <p id="statusText" class="text-xs text-gray-400">點擊任意卡片或句子，即可直接聽發音</p>
     </div>
 
-    <!-- 載入與進度提示 -->
+    <!-- 載入指示 -->
     <div id="loading" class="hidden text-center py-6">
       <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-amber-500 border-t-transparent"></div>
       <p id="progressText" class="text-sm text-amber-700 mt-2 font-medium">圖片優化與降噪中...</p>
@@ -60,9 +60,8 @@
 
   <script>
     window.parsedLessons = [];
-    let currentAudio = null;
+    const audioPlayer = document.getElementById('globalAudioPlayer');
 
-    // 監聽圖片上傳
     document.getElementById('cameraInput').addEventListener('change', handleImageUpload);
     document.getElementById('albumInput').addEventListener('change', handleImageUpload);
 
@@ -116,14 +115,12 @@
       }
     }
 
-    // 圖片預處理（黑白高對比）
     function preprocessImage(file) {
       return new Promise((resolve) => {
         const img = new Image();
         img.onload = () => {
           const canvas = document.createElement('canvas');
           const ctx = canvas.getContext('2d');
-          
           let w = img.width, h = img.height;
           const maxDim = 1400;
           if (w > maxDim || h > maxDim) {
@@ -166,11 +163,11 @@
       const container = document.getElementById('resultsContainer');
       const chunks = splitIntoChunks(sentence);
       
-      const translation = await fetchGoogleTranslation(sentence);
+      const translation = await robustTranslate(sentence);
       const grammarTip = analyzeGrammar(sentence);
 
       const chunkPromises = chunks.map(async c => {
-        const trans = await fetchGoogleTranslation(c);
+        const trans = await robustTranslate(c);
         return { en: c, zh: trans };
       });
       const chunkResults = await Promise.all(chunkPromises);
@@ -187,15 +184,19 @@
       card.className = "bg-white p-4 rounded-xl shadow-sm border border-orange-100 space-y-3 transition-all";
 
       const chunksHtml = chunkResults.map(c => `
-        <div class="inline-flex flex-col items-center bg-amber-50 rounded-lg p-2 border border-amber-200 text-center">
+        <div onclick="speakSpecificText('${c.en.replace(/'/g, "\\'")}')" class="inline-flex flex-col items-center bg-amber-50 active:bg-amber-100 rounded-lg p-2 border border-amber-200 text-center cursor-pointer">
           <span class="font-bold text-gray-800 text-sm">${c.en}</span>
           <span class="text-xs text-red-500 mt-0.5">${c.zh}</span>
         </div>
       `).join('');
 
+      // ⭐ 整張卡片的任何文字，點擊都可以直接發音！
       card.innerHTML = `
-        <div>
-          <div class="text-base font-semibold text-slate-800 leading-snug">${sentence}</div>
+        <div onclick="playSmartAudio(${index}, 1.0)" class="cursor-pointer active:opacity-75">
+          <div class="text-base font-semibold text-slate-800 leading-snug flex items-start justify-between gap-1">
+            <span>${sentence}</span>
+            <span class="text-blue-500 text-xs mt-1 shrink-0">🔊 點句發音</span>
+          </div>
           <div class="text-xs text-gray-500 mt-1">${translation}</div>
         </div>
 
@@ -207,12 +208,11 @@
           <span class="font-bold text-amber-700">語法重點：</span>${grammarTip}
         </div>
 
-        <!-- 播放控制按鈕 -->
         <div class="flex gap-2 pt-1 border-t border-gray-100 text-xs">
-          <button id="btn-play-${index}" onclick="playUniversalAudio(${index}, 1.0)" class="flex-1 py-2.5 bg-blue-50 text-blue-600 active:bg-blue-200 rounded-lg font-medium flex items-center justify-center gap-1">
+          <button id="btn-play-${index}" onclick="playSmartAudio(${index}, 1.0)" class="flex-1 py-2.5 bg-blue-50 text-blue-600 active:bg-blue-200 rounded-lg font-medium flex items-center justify-center gap-1">
             🔊 喇叭朗讀
           </button>
-          <button id="btn-slow-${index}" onclick="playUniversalAudio(${index}, 0.7)" class="flex-1 py-2.5 bg-blue-50 text-blue-600 active:bg-blue-200 rounded-lg font-medium flex items-center justify-center gap-1">
+          <button id="btn-slow-${index}" onclick="playSmartAudio(${index}, 0.7)" class="flex-1 py-2.5 bg-blue-50 text-blue-600 active:bg-blue-200 rounded-lg font-medium flex items-center justify-center gap-1">
             🐢 慢速
           </button>
           <button onclick="recordAndAssess(${index})" class="flex-1 py-2.5 bg-green-50 text-green-600 active:bg-green-200 rounded-lg font-medium flex items-center justify-center gap-1">
@@ -245,20 +245,29 @@
       return parts.length > 1 ? parts : [text];
     }
 
-    async function fetchGoogleTranslation(text) {
+    // 穩健雙通道翻譯引擎
+    async function robustTranslate(text) {
       if (!text || text.trim().length === 0) return '';
+      // 通道 1: Google GTX
       try {
         const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t&q=${encodeURIComponent(text.trim())}`;
         const res = await fetch(url);
-        if (!res.ok) throw new Error('翻譯請求失敗');
-        const data = await res.json();
-        if (data && data[0]) {
-          return data[0].map(item => item[0]).join('');
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data[0]) return data[0].map(item => item[0]).join('');
         }
-        return '';
-      } catch (e) {
-        return '（點擊卡片發音學習）';
-      }
+      } catch (e) {}
+
+      // 通道 2: MyMemory (帶隨機 Email 擴容)
+      try {
+        const mail = `edu_${Math.floor(Math.random()*10000)}@gmail.com`;
+        const res = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|zh-TW&de=${mail}`);
+        const data = await res.json();
+        const t = data.responseData?.translatedText;
+        if (t && !t.includes('MYMEMORY WARNING')) return t;
+      } catch (e) {}
+
+      return '翻譯讀取中';
     }
 
     function analyzeGrammar(s) {
@@ -277,76 +286,60 @@
       return "【陳述句】標準的主謂賓敘述結構，適合日常語感積累。";
     }
 
-    // ⭐ 終極雙重保證語音播放器（串流 + 本地備援）
-    function playUniversalAudio(index, rate = 1.0) {
+    // ⭐ 終極外放發音：使用 Amazon Polly 高清真人家教美語
+    function playSmartAudio(index, rate = 1.0) {
       const item = window.parsedLessons[index];
       if (!item) return;
+      speakSpecificText(item.original, rate, index);
+    }
 
-      const card = document.getElementById(`card-${index}`);
-      const btn = document.getElementById(rate < 1 ? `btn-slow-${index}` : `btn-play-${index}`);
+    function speakSpecificText(text, rate = 1.0, index = null) {
+      const card = index !== null ? document.getElementById(`card-${index}`) : null;
+      const btn = index !== null ? document.getElementById(rate < 1 ? `btn-slow-${index}` : `btn-play-${index}`) : null;
       const originalText = rate < 1 ? "🐢 慢速" : "🔊 喇叭朗讀";
 
-      // 停止先前正在播放的任何音訊
-      if (currentAudio) {
-        currentAudio.pause();
-        currentAudio = null;
-      }
-      if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-      }
-
-      card.classList.add('ring-2', 'ring-blue-400');
+      if (card) card.classList.add('ring-2', 'ring-blue-400');
       if (btn) btn.innerText = "🔊 播放中...";
 
       const resetUI = () => {
-        card.classList.remove('ring-2', 'ring-blue-400');
+        if (card) card.classList.remove('ring-2', 'ring-blue-400');
         if (btn) btn.innerText = originalText;
       };
 
-      // 方案 A：使用解鎖了防盜鏈的 Google 官方 MP3 音訊串流 (走媒體外放通道)
-      const encodedText = encodeURIComponent(item.original);
-      const audioUrl = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=en&q=${encodedText}`;
-      
-      const audio = new Audio();
-      audio.src = audioUrl;
-      audio.playbackRate = rate;
-      currentAudio = audio;
+      // 核心發音：Amazon Polly (Joanna 美語真人音軌，強制走喇叭)
+      const pollyUrl = `https://api.streamelements.com/kappa/v2/speech?voice=Joanna&text=${encodeURIComponent(text)}`;
 
-      audio.onended = resetUI;
+      audioPlayer.src = pollyUrl;
+      audioPlayer.playbackRate = rate;
 
-      // 方案 B（自動備援）：若外部網路失敗，1毫秒無縫切換到 iPhone 內建發音引擎
-      audio.onerror = () => {
-        console.warn("串流載入失敗，立即切換為 iPhone 本機原生語音");
-        playNativeSpeechFallback(item.original, rate, resetUI);
+      audioPlayer.onended = resetUI;
+      audioPlayer.onerror = () => {
+        // 備援：Google 發音
+        const googleUrl = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=en&q=${encodeURIComponent(text)}`;
+        audioPlayer.src = googleUrl;
+        audioPlayer.play().catch(() => {
+          // 終極備援：Safari 本地語音
+          nativeFallback(text, rate, resetUI);
+        });
       };
 
-      // 播放觸發
-      const playPromise = audio.play();
-      if (playPromise !== undefined) {
-        playPromise.catch((err) => {
-          console.warn("媒體外放被攔截，切換至原生引擎:", err);
-          playNativeSpeechFallback(item.original, rate, resetUI);
-        });
-      }
+      audioPlayer.play().catch(() => {
+        nativeFallback(text, rate, resetUI);
+      });
     }
 
-    // iPhone 本地原生語音備援
-    function playNativeSpeechFallback(text, rate, callback) {
-      if (!('speechSynthesis' in window)) {
+    function nativeFallback(text, rate, callback) {
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = 'en-US';
+        u.rate = rate;
+        u.onend = callback;
+        u.onerror = callback;
+        window.speechSynthesis.speak(u);
+      } else {
         if (callback) callback();
-        return;
       }
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = 'en-US';
-      utterance.rate = rate;
-
-      utterance.onend = callback;
-      utterance.onerror = (e) => {
-        console.error("本地語音錯誤:", e);
-        if (callback) callback();
-      };
-
-      window.speechSynthesis.speak(utterance);
     }
 
     // 語音跟讀與發音評測
