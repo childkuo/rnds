@@ -3,32 +3,40 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>英文課文伴讀 (純前端免金鑰版)</title>
+  <title>英文課文伴讀 (免金鑰純淨版)</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- 引入免費且無需 Key 的純前端 OCR 引擎 -->
+  <!-- 引入開源 Tesseract.js -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 <body class="bg-amber-50 min-h-screen text-slate-800 pb-16">
 
   <!-- 頂部標題 -->
   <header class="bg-white p-4 shadow-sm sticky top-0 z-10 text-center font-bold text-lg text-amber-700">
-    🦆 拍照學英語 (免 Key 永久版)
+    🦆 拍照學英語 (免 Key 升級版)
   </header>
 
   <main class="max-w-md mx-auto p-4 space-y-4">
-    <!-- 拍照與上傳按鈕 -->
-    <div class="bg-white p-5 rounded-2xl shadow-sm text-center border-2 border-dashed border-amber-300">
+    <!-- 雙上傳按鈕：拍照 & 相簿 -->
+    <div class="bg-white p-5 rounded-2xl shadow-sm text-center border-2 border-dashed border-amber-300 space-y-3">
+      <!-- 隱藏的 input -->
       <input type="file" id="cameraInput" accept="image/*" capture="environment" class="hidden">
-      <button onclick="document.getElementById('cameraInput').click()" class="w-full py-3.5 bg-amber-500 hover:bg-amber-600 active:scale-95 transition text-white font-bold rounded-xl shadow flex items-center justify-center gap-2 text-base">
-        📷 拍攝課本 / 上傳圖片
-      </button>
-      <p id="statusText" class="text-xs text-gray-400 mt-2">完全在本機處理，不需申請任何帳號</p>
+      <input type="file" id="albumInput" accept="image/*" class="hidden">
+
+      <div class="grid grid-cols-2 gap-2">
+        <button onclick="document.getElementById('cameraInput').click()" class="py-3 bg-amber-500 hover:bg-amber-600 active:scale-95 transition text-white font-bold rounded-xl shadow flex items-center justify-center gap-1 text-sm">
+          📷 即時拍照
+        </button>
+        <button onclick="document.getElementById('albumInput').click()" class="py-3 bg-blue-500 hover:bg-blue-600 active:scale-95 transition text-white font-bold rounded-xl shadow flex items-center justify-center gap-1 text-sm">
+          🖼️ 從相簿選取
+        </button>
+      </div>
+      <p id="statusText" class="text-xs text-gray-400">已啟用影像降噪與亂碼過濾技術</p>
     </div>
 
     <!-- 處理中進度提示 -->
     <div id="loading" class="hidden text-center py-6">
       <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-amber-500 border-t-transparent"></div>
-      <p id="progressText" class="text-sm text-amber-700 mt-2 font-medium">正在載入文字辨識引擎...</p>
+      <p id="progressText" class="text-sm text-amber-700 mt-2 font-medium">圖片智慧除噪中...</p>
     </div>
 
     <!-- 解析結果展示區 -->
@@ -36,14 +44,11 @@
   </main>
 
   <script>
-    // 常見英文意群切割介詞與連詞 (用於將長句拆分成短語)
-    const CHUNK_SPLITTERS = [
-      'in front of', 'next to', 'because of', 'as well as',
-      'in', 'on', 'at', 'under', 'with', 'for', 'to', 'from',
-      'and', 'but', 'or', 'so', 'because', 'before', 'after'
-    ];
+    // 綁定拍照與相簿選取的事件
+    document.getElementById('cameraInput').addEventListener('change', handleImageUpload);
+    document.getElementById('albumInput').addEventListener('change', handleImageUpload);
 
-    document.getElementById('cameraInput').addEventListener('change', async function(e) {
+    async function handleImageUpload(e) {
       const file = e.target.files[0];
       if (!file) return;
 
@@ -53,61 +58,129 @@
       
       loading.classList.remove('hidden');
       container.innerHTML = '';
-      progressText.innerText = "手機本地識別文字中 (需 2~4 秒)...";
+      progressText.innerText = "正在進行圖片降噪與字體優化...";
 
       try {
-        // 1. 純前端 OCR 文字辨識 (無任何後端)
+        // 1. 圖片前端預處理（縮小尺寸 + 灰階高對比，避免手機超大照片識別出亂碼）
+        const processedImageBase64 = await preprocessImage(file);
+
+        progressText.innerText = "文字辨識中 (本地運算需 2~3 秒)...";
+
+        // 2. 啟動 OCR，限制只識別英文字母與標準標點，徹底杜絕特殊符號亂碼
         const worker = await Tesseract.createWorker('eng');
-        const ret = await worker.recognize(file);
+        await worker.setParameters({
+          tessedit_char_whitelist: 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,?!\'"- ',
+        });
+
+        const ret = await worker.recognize(processedImageBase64);
         await worker.terminate();
 
-        const text = ret.data.text;
-        progressText.innerText = "正在拆解語法與查詢翻譯...";
+        progressText.innerText = "正在進行長句拆解與語法分析...";
 
-        // 2. 斷句清洗
-        const sentences = text
+        // 3. 清理辨識出的文字（修復斷行、移除雜訊符號）
+        const cleanFullText = cleanOcrText(ret.data.text);
+        
+        // 斷句切分
+        const sentences = cleanFullText
           .split(/(?<=[.?!])\s+/)
-          .map(s => s.replace(/\n/g, ' ').trim())
-          .filter(s => s.length > 3 && /[a-zA-Z]/.test(s));
+          .map(s => s.trim())
+          .filter(s => s.length >= 4 && /[a-zA-Z]/.test(s));
 
         if (sentences.length === 0) {
-          alert('未能清楚辨識到文字，請拍得更清楚一些！');
+          alert('未能清晰識別出英文，請拍得更近、更平整一些！');
           return;
         }
 
-        // 3. 處理每個句子（拆解意群、翻譯、語法分析）
+        // 4. 逐句渲染卡片
         for (let i = 0; i < sentences.length; i++) {
           await processSentenceCard(sentences[i], i);
         }
 
       } catch (err) {
-        alert('識別失敗：' + err.message);
+        alert('解析失敗：' + err.message);
       } finally {
         loading.classList.add('hidden');
+        // 重置 input 以便能再次選擇同一張圖
+        e.target.value = '';
       }
-    });
+    }
 
-    // 處理單個句子的意群切割與翻譯
+    // 核心修復：使用 Canvas 對手機拍攝的照片做黑白高對比處理，大幅提升識別度
+    function preprocessImage(file) {
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+          
+          // 限制最大寬度 1400px，既節省 iPhone 記憶體，又能消除細碎雜點
+          let w = img.width;
+          let h = img.height;
+          const maxDim = 1400;
+          if (w > maxDim || h > maxDim) {
+            if (w > h) {
+              h = Math.round((h * maxDim) / w);
+              w = maxDim;
+            } else {
+              w = Math.round((w * maxDim) / h);
+              h = maxDim;
+            }
+          }
+          canvas.width = w;
+          canvas.height = h;
+          ctx.drawImage(img, 0, 0, w, h);
+
+          // 轉為灰階並增強黑白反差
+          const imgData = ctx.getImageData(0, 0, w, h);
+          const d = imgData.data;
+          for (let i = 0; i < d.length; i += 4) {
+            const gray = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
+            // 輕微二值化增強
+            const val = gray > 135 ? 255 : (gray < 80 ? 0 : gray);
+            d[i] = val;
+            d[i+1] = val;
+            d[i+2] = val;
+          }
+          ctx.putImageData(imgData, 0, 0);
+          resolve(canvas.toDataURL('image/jpeg', 0.85));
+        };
+        img.src = URL.createObjectURL(file);
+      });
+    }
+
+    // 清洗 OCR 出來的文字
+    function cleanOcrText(text) {
+      return text
+        .replace(/([a-z])- (\n)?([a-z])/gi, '$1$3') // 修復連字號斷行 (如 exam-\nple -> example)
+        .replace(/\n+/g, ' ')                        // 將所有換行變為空格
+        .replace(/\s+/g, ' ')                        // 壓縮多餘空格
+        .replace(/[_|~`^]/g, '')                     // 移除易產生亂碼的雜點符號
+        .trim();
+    }
+
+    // 意群常見拆分介詞
+    const CHUNK_SPLITTERS = [
+      'in front of', 'next to', 'because of', 'as well as',
+      'in', 'on', 'at', 'under', 'with', 'for', 'to', 'from',
+      'and', 'but', 'or', 'so', 'because', 'before', 'after'
+    ];
+
+    // 處理單句卡片
     async function processSentenceCard(sentence, index) {
       const container = document.getElementById('resultsContainer');
-
-      // (A) 長句智能拆解邏輯 (圖 3 效果)
       const chunks = splitIntoChunks(sentence);
       
-      // (B) 調用免 Key 公共翻譯接口
+      // 取得全句繁體翻譯 (已修復 HTML 亂碼)
       const translation = await fetchTranslation(sentence);
-      
-      // (C) 本地規則語法判斷 (圖 8 效果)
       const grammarTip = analyzeGrammar(sentence);
 
-      // (D) 翻譯每個切分出來的短語
+      // 取得各意群翻譯
       const chunkPromises = chunks.map(async c => {
         const trans = await fetchTranslation(c);
         return { en: c, zh: trans };
       });
       const chunkResults = await Promise.all(chunkPromises);
 
-      // (E) 渲染畫面
       const card = document.createElement('div');
       card.className = "bg-white p-4 rounded-xl shadow-sm border border-orange-100 space-y-3";
 
@@ -143,7 +216,7 @@
       container.appendChild(card);
     }
 
-    // 句子意群切割演算法 (依據介詞短語與連詞切分)
+    // 意群切分
     function splitIntoChunks(text) {
       let parts = [text];
       CHUNK_SPLITTERS.forEach(splitter => {
@@ -164,33 +237,43 @@
       return parts.length > 1 ? parts : [text];
     }
 
-    // 免費且免金鑰的公共翻譯 API
+    // 核心修復：解碼 HTML 實體字符（解決 &#39;、&quot; 等亂碼）
+    function decodeHtml(html) {
+      const txt = document.createElement("textarea");
+      txt.innerHTML = html;
+      return txt.value;
+    }
+
+    // 免費公共翻譯（加上解碼防護）
     async function fetchTranslation(text) {
+      if (!text || text.trim().length === 0) return '';
       try {
         const res = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|zh-TW`);
         const data = await res.json();
-        return data.responseData?.translatedText || '翻譯中...';
+        let rawTranslation = data.responseData?.translatedText || '';
+        // 修正亂碼
+        return decodeHtml(rawTranslation);
       } catch (e) {
         return '';
       }
     }
 
-    // 本地語法分析規則引擎 (模擬 AI 語法重點)
+    // 本地語法分析規則
     function analyzeGrammar(s) {
       const lower = s.toLowerCase();
       if (/there (is|are|was|were)/.test(lower)) {
-        return "【There be 句型】表示『某處存在某物』，注意其後的單複數動詞變化。";
+        return "【There be 句型】表示『某處存在某物』。";
       } else if (/^(don't|please|hurry|let's|listen)/.test(lower) || /!$/.test(s)) {
-        return "【祈使句】省去了主語，常用於提出請求、命令或催促對方。";
+        return "【祈使句】省略主語，用於發出號召、請求或催促。";
       } else if (/(can|can't|must|should|may)\b/.test(lower)) {
-        return "【情態動詞】後方必須接動詞原形，用以表達能力、必要或義務。";
+        return "【情態動詞】後接動詞原形，表示能力、建議或意願。";
       } else if (/(have|has) (been|[a-z]+ed)/.test(lower)) {
-        return "【完成時態】表示過去發生的動作對現在造成的影響或持續的狀態。";
+        return "【完成時態】表示過去動作對現在造成的狀態或影響。";
       }
-      return "【陳述句】標準的主語 + 動詞結構，適合日常交流與寫作積累。";
+      return "【陳述句】主謂齊全的完整表達，適合跟讀磨耳朵。";
     }
 
-    // iPhone 原生朗讀
+    // iPhone 原生發音
     function speak(text, rate = 1) {
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
@@ -199,7 +282,7 @@
       window.speechSynthesis.speak(utterance);
     }
 
-    // iPhone 原生語音辨識與打分
+    // iPhone 跟讀評測
     function recordAndAssess(targetText, index) {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (!SpeechRecognition) {
@@ -210,7 +293,7 @@
       recognition.lang = 'en-US';
       const feedback = document.getElementById(`feedback-${index}`);
       feedback.className = "text-xs text-center font-bold py-1 text-amber-500 block";
-      feedback.innerText = "聆聽中，請朗讀句子...";
+      feedback.innerText = "請開始朗讀句子...";
       recognition.start();
 
       recognition.onresult = function(event) {
