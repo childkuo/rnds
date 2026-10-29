@@ -3,28 +3,29 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>英文課文伴讀 (語音修復版)</title>
+  <title>英文課文伴讀</title>
+  
+  <!-- 專屬書法圖示：分頁圖標 & iPhone 桌面 App 圖標 -->
+  <link rel="icon" href="logo.png" type="image/png">
+  <link rel="apple-touch-icon" href="logo.png">
+
+  <!-- 引入樣式與開源 OCR 引擎 -->
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- 引入開源 Tesseract.js -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 <body class="bg-amber-50 min-h-screen text-slate-800 pb-20">
 
-  <!-- 頂部標題 -->
-  <header class="bg-white p-4 shadow-sm sticky top-0 z-10 text-center font-bold text-lg text-amber-700">
-    🦆 拍照學英語
+  <!-- 隱藏的音訊元件：強制啟動 iPhone 實體喇叭通道 -->
+  <audio id="iosAudioEnabler" playsinline preload="auto" src="data:audio/wav;base64,UklGRjIAAABXQVZFZm10IBIAAAABAAEAQB8AAEAfAAABAAgAAABmYWN0BAAAAAAAAABkYXRhAAAAAA=="></audio>
+
+  <!-- 頂部導覽列：已替換為你的專屬書法圖示 -->
+  <header class="bg-white p-3 shadow-sm sticky top-0 z-10 flex items-center justify-center gap-2.5 font-bold text-lg text-slate-800">
+    <img src="logo.png" alt="Logo" class="h-9 w-auto object-contain inline-block">
+    <span>拍照學英語</span>
   </header>
 
-  <!-- iPhone 靜音模式重要提醒 -->
-  <div class="max-w-md mx-auto px-4 pt-3">
-    <div class="bg-amber-100 border-l-4 border-amber-500 text-amber-900 p-2.5 rounded text-xs flex items-center gap-1.5 shadow-sm">
-      <span>🔔</span>
-      <span><strong>iPhone 提示：</strong>若無聲音，請確認手機側邊的<strong>靜音開關已關閉</strong>（響鈴模式），並將音量調大。</span>
-    </div>
-  </div>
-
   <main class="max-w-md mx-auto p-4 space-y-4">
-    <!-- 雙上傳按鈕：拍照 & 相簿 -->
+    <!-- 雙功能上傳區：拍照與相簿 -->
     <div class="bg-white p-5 rounded-2xl shadow-sm text-center border-2 border-dashed border-amber-300 space-y-3">
       <input type="file" id="cameraInput" accept="image/*" capture="environment" class="hidden">
       <input type="file" id="albumInput" accept="image/*" class="hidden">
@@ -40,27 +41,42 @@
       <p id="statusText" class="text-xs text-gray-400">拍下課文或繪本，立刻拆解句子與發音</p>
     </div>
 
-    <!-- 處理中進度提示 -->
+    <!-- 載入與進度提示 -->
     <div id="loading" class="hidden text-center py-6">
       <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-amber-500 border-t-transparent"></div>
       <p id="progressText" class="text-sm text-amber-700 mt-2 font-medium">圖片優化與降噪中...</p>
     </div>
 
-    <!-- 解析結果展示區 -->
+    <!-- 課文卡片清單展示區 -->
     <div id="resultsContainer" class="space-y-4"></div>
   </main>
 
   <script>
-    // 全域儲存解析出的句子資料，避免 inline onclick 引號轉義爆炸
     window.parsedLessons = [];
     let englishVoice = null;
+    let audioCtx = null;
 
-    // 初始化 iOS 本地發音引擎
+    // 強制將 iOS 音訊切換至媒體外放喇叭通道
+    function forceEnableIosSpeaker() {
+      const enabler = document.getElementById('iosAudioEnabler');
+      if (enabler) {
+        enabler.play().catch(() => {});
+      }
+      try {
+        if (!audioCtx) {
+          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioCtx.state === 'suspended') {
+          audioCtx.resume();
+        }
+      } catch (e) {}
+    }
+
+    // 初始化 iPhone 原生語音引擎
     function initSpeechEngine() {
       if ('speechSynthesis' in window) {
         const updateVoices = () => {
           const voices = window.speechSynthesis.getVoices();
-          // 優先找美語或英語聲音（iOS 通常有 Samantha, Daniel 等）
           englishVoice = voices.find(v => v.lang === 'en-US' || v.lang.startsWith('en')) || null;
         };
         updateVoices();
@@ -69,22 +85,15 @@
     }
     initSpeechEngine();
 
-    // 第一次點擊畫面時解除 iOS 語音鎖定（Safari 限制）
-    document.body.addEventListener('touchstart', function unlock() {
-      if ('speechSynthesis' in window) {
-        const dummyUtterance = new SpeechSynthesisUtterance('');
-        window.speechSynthesis.speak(dummyUtterance);
-      }
-      document.body.removeEventListener('touchstart', unlock);
-    }, { once: true });
-
-    // 綁定檔案上傳監聽
+    // 監聽圖片上傳
     document.getElementById('cameraInput').addEventListener('change', handleImageUpload);
     document.getElementById('albumInput').addEventListener('change', handleImageUpload);
 
     async function handleImageUpload(e) {
       const file = e.target.files[0];
       if (!file) return;
+
+      forceEnableIosSpeaker();
 
       const loading = document.getElementById('loading');
       const progressText = document.getElementById('progressText');
@@ -96,8 +105,9 @@
       progressText.innerText = "圖片降噪與字體強化中...";
 
       try {
+        // 圖片預處理（防止高解析度照片產生亂碼）
         const processedImageBase64 = await preprocessImage(file);
-        progressText.innerText = "本地辨識中 (約需 2~3 秒)...";
+        progressText.innerText = "本地文字辨識中 (約 2~3 秒)...";
 
         const worker = await Tesseract.createWorker('eng');
         await worker.setParameters({
@@ -107,7 +117,7 @@
         const ret = await worker.recognize(processedImageBase64);
         await worker.terminate();
 
-        progressText.innerText = "正在拆解意群長句與語法...";
+        progressText.innerText = "正在拆解長句結構與語法...";
 
         const cleanFullText = cleanOcrText(ret.data.text);
         const sentences = cleanFullText
@@ -116,7 +126,7 @@
           .filter(s => s.length >= 4 && /[a-zA-Z]/.test(s));
 
         if (sentences.length === 0) {
-          alert('未能清楚辨識到文字，請拍得更近、更清楚！');
+          alert('未能清晰識別出英文，請拍得更近、更清楚！');
           return;
         }
 
@@ -132,7 +142,7 @@
       }
     }
 
-    // 圖片預處理（轉黑白高對比）
+    // Canvas 影像降噪與黑白高對比處理
     function preprocessImage(file) {
       return new Promise((resolve) => {
         const img = new Image();
@@ -163,6 +173,7 @@
       });
     }
 
+    // 清洗 OCR 文字雜點
     function cleanOcrText(text) {
       return text
         .replace(/([a-z])- (\n)?([a-z])/gi, '$1$3')
@@ -178,6 +189,7 @@
       'and', 'but', 'or', 'so', 'because', 'before', 'after'
     ];
 
+    // 處理句子並生成卡片
     async function processSentenceCard(sentence, index) {
       const container = document.getElementById('resultsContainer');
       const chunks = splitIntoChunks(sentence);
@@ -191,7 +203,6 @@
       });
       const chunkResults = await Promise.all(chunkPromises);
 
-      // 存入記憶體陣列，避免字串跳脫問題
       window.parsedLessons[index] = {
         original: sentence,
         translation: translation,
@@ -224,12 +235,11 @@
           <span class="font-bold text-amber-700">語法重點：</span>${grammarTip}
         </div>
 
-        <!-- 播放控制按鈕 -->
         <div class="flex gap-2 pt-1 border-t border-gray-100 text-xs">
-          <button id="btn-normal-${index}" onclick="playSafeSpeech(${index}, 1.0)" class="flex-1 py-2.5 bg-blue-50 text-blue-600 active:bg-blue-200 rounded-lg font-medium flex items-center justify-center gap-1">
-            🔊 朗讀
+          <button id="btn-normal-${index}" onclick="playForcedSpeaker(${index}, 1.0)" class="flex-1 py-2.5 bg-blue-50 text-blue-600 active:bg-blue-200 rounded-lg font-medium flex items-center justify-center gap-1">
+            🔊 喇叭朗讀
           </button>
-          <button id="btn-slow-${index}" onclick="playSafeSpeech(${index}, 0.7)" class="flex-1 py-2.5 bg-blue-50 text-blue-600 active:bg-blue-200 rounded-lg font-medium flex items-center justify-center gap-1">
+          <button id="btn-slow-${index}" onclick="playForcedSpeaker(${index}, 0.7)" class="flex-1 py-2.5 bg-blue-50 text-blue-600 active:bg-blue-200 rounded-lg font-medium flex items-center justify-center gap-1">
             🐢 慢速
           </button>
           <button onclick="recordAndAssess(${index})" class="flex-1 py-2.5 bg-green-50 text-green-600 active:bg-green-200 rounded-lg font-medium flex items-center justify-center gap-1">
@@ -263,12 +273,14 @@
       return parts.length > 1 ? parts : [text];
     }
 
+    // 解碼 HTML 字符防止中文翻譯出現亂碼
     function decodeHtml(html) {
       const txt = document.createElement("textarea");
       txt.innerHTML = html;
       return txt.value;
     }
 
+    // 公共免 Key 翻譯接口
     async function fetchTranslation(text) {
       if (!text || text.trim().length === 0) return '';
       try {
@@ -280,6 +292,7 @@
       }
     }
 
+    // 語法分析規則引擎
     function analyzeGrammar(s) {
       const lower = s.toLowerCase();
       if (/there (is|are|was|were)/.test(lower)) {
@@ -294,15 +307,15 @@
       return "【陳述句】標準的主語 + 動詞結構，適合日常語感積累。";
     }
 
-    // ⭐ 專為 iOS Safari 修復的朗讀函數
-    function playSafeSpeech(index, rate = 1.0) {
+    // 強制走實體喇叭通道發音
+    function playForcedSpeaker(index, rate = 1.0) {
       const item = window.parsedLessons[index];
       if (!item || !('speechSynthesis' in window)) {
         alert('瀏覽器未支援語音播放');
         return;
       }
 
-      // iOS Safari 防卡死核心：先 cancel，再稍作延遲發起
+      forceEnableIosSpeaker();
       window.speechSynthesis.cancel();
 
       const card = document.getElementById(`card-${index}`);
@@ -323,14 +336,14 @@
 
         utterance.onerror = (e) => {
           card.classList.remove('ring-2', 'ring-blue-400');
-          console.error("SpeechSynthesis error:", e);
+          console.error("語音發音異常:", e);
         };
 
         window.speechSynthesis.speak(utterance);
-      }, 50); // 延遲 50ms 避開 Safari 線程衝突
+      }, 60);
     }
 
-    // iPhone 跟讀評測（使用索引讀取文本）
+    // 語音跟讀與發音評測
     function recordAndAssess(index) {
       const item = window.parsedLessons[index];
       if (!item) return;
