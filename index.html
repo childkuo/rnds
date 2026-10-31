@@ -14,7 +14,7 @@
 </head>
 <body class="bg-amber-50 min-h-screen text-slate-800 pb-20">
 
-  <!-- 真正的全域媒體播放器 (保證走 iPhone 喇叭) -->
+  <!-- 全域外放音訊播放器 -->
   <audio id="globalAudioPlayer" playsinline preload="auto"></audio>
 
   <!-- 頂部導覽列：你的專屬書法 Logo -->
@@ -45,7 +45,7 @@
           🖼️ 從相簿選取
         </button>
       </div>
-      <p id="statusText" class="text-xs text-gray-400">點擊任意卡片或句子，即可直接聽發音</p>
+      <p id="statusText" class="text-xs text-gray-400">已啟用「表格線條、圖形雜訊自動排除」</p>
     </div>
 
     <!-- 載入指示 -->
@@ -90,21 +90,20 @@
         const ret = await worker.recognize(processedImageBase64);
         await worker.terminate();
 
-        progressText.innerText = "正在拆解長句結構與即時翻譯...";
+        progressText.innerText = "正在自動過濾表格、圖形與雜訊...";
 
-        const cleanFullText = cleanOcrText(ret.data.text);
-        const sentences = cleanFullText
-          .split(/(?<=[.?!])\s+/)
-          .map(s => s.trim())
-          .filter(s => s.length >= 4 && /[a-zA-Z]/.test(s));
+        // 核心調用：過濾表格、雜質符號與圖形噪點，提取真正課文
+        const validSentences = extractValidEnglishSentences(ret.data.text);
 
-        if (sentences.length === 0) {
-          alert('未能清晰識別出英文，請拍得更近、更清楚！');
+        if (validSentences.length === 0) {
+          alert('未能識別出足夠完整的英文課文句子，請避開插圖，拍得更近更清晰！');
           return;
         }
 
-        for (let i = 0; i < sentences.length; i++) {
-          await processSentenceCard(sentences[i], i);
+        progressText.innerText = "正在拆解意群與翻譯課文...";
+
+        for (let i = 0; i < validSentences.length; i++) {
+          await processSentenceCard(validSentences[i], i);
         }
 
       } catch (err) {
@@ -115,6 +114,7 @@
       }
     }
 
+    // Canvas 影像預處理：提升對比度
     function preprocessImage(file) {
       return new Promise((resolve) => {
         const img = new Image();
@@ -144,13 +144,42 @@
       });
     }
 
-    function cleanOcrText(text) {
-      return text
+    // ⭐ 核心新技術：智能排除表格、幾何圖形雜訊與非英文亂碼
+    function extractValidEnglishSentences(rawText) {
+      // 1. 去除斷詞連字號，並按段落或換行分組
+      let clean = rawText
         .replace(/([a-z])- (\n)?([a-z])/gi, '$1$3')
-        .replace(/\n+/g, ' ')
-        .replace(/\s+/g, ' ')
-        .replace(/[_|~`^]/g, '')
-        .trim();
+        .replace(/[|_+~`^\\<>{}\[\]=]/g, ' '); // 將表格線與特殊符號替換為空格
+
+      // 2. 切分為潛在句子
+      const candidates = clean
+        .split(/(?<=[.?!])\s+|\n+/)
+        .map(s => s.trim())
+        .filter(s => s.length > 0);
+
+      const validList = [];
+
+      for (let str of candidates) {
+        // 規則 A：過濾掉連續破折號、底線等表格邊框
+        if (/^[-—_.=\s]+$/.test(str)) continue;
+
+        // 規則 B：純數字、頁碼（例如 "Page 23"、"12"）直接排除
+        if (/^(page\s*)?\d+$/i.test(str)) continue;
+
+        // 規則 C：檢驗字母密度（英文字母必須佔總長度的 65% 以上，防止圖形噪點）
+        const letterCount = (str.match(/[a-zA-Z]/g) || []).length;
+        if (letterCount / str.length < 0.65) continue;
+
+        // 規則 D：單詞數量檢驗（一句有效課文至少需要 3 個英文單字）
+        const words = str.split(/\s+/).filter(w => /[a-zA-Z]{2,}/.test(w));
+        if (words.length < 3) continue;
+
+        // 整理空格與多餘標點
+        const finalized = str.replace(/\s+/g, ' ').trim();
+        validList.push(finalized);
+      }
+
+      return validList;
     }
 
     const CHUNK_SPLITTERS = [
@@ -190,7 +219,6 @@
         </div>
       `).join('');
 
-      // ⭐ 整張卡片的任何文字，點擊都可以直接發音！
       card.innerHTML = `
         <div onclick="playSmartAudio(${index}, 1.0)" class="cursor-pointer active:opacity-75">
           <div class="text-base font-semibold text-slate-800 leading-snug flex items-start justify-between gap-1">
@@ -245,10 +273,9 @@
       return parts.length > 1 ? parts : [text];
     }
 
-    // 穩健雙通道翻譯引擎
+    // 雙通道翻譯
     async function robustTranslate(text) {
       if (!text || text.trim().length === 0) return '';
-      // 通道 1: Google GTX
       try {
         const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t&q=${encodeURIComponent(text.trim())}`;
         const res = await fetch(url);
@@ -258,7 +285,6 @@
         }
       } catch (e) {}
 
-      // 通道 2: MyMemory (帶隨機 Email 擴容)
       try {
         const mail = `edu_${Math.floor(Math.random()*10000)}@gmail.com`;
         const res = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|zh-TW&de=${mail}`);
@@ -273,7 +299,7 @@
     function analyzeGrammar(s) {
       const lower = s.toLowerCase();
       if (/\b(went|visited|saw|had|did|was|were|played|bought|found|came|got)\b/.test(lower) || /\b[a-z]{3,}ed\b/.test(lower)) {
-        return "【一般過去時】使用了過去式動詞（如 went），用來敘述日記、過去經歷或發生的事情。";
+        return "【一般過去時】使用了過去式動詞，用來敘述日記、過去經歷或發生的事情。";
       } else if (/there (is|are|was|were)/.test(lower)) {
         return "【There be 句型】表示『某處存在某物』。";
       } else if (/^(don't|please|hurry|let's|listen)\b/.test(lower)) {
@@ -286,7 +312,7 @@
       return "【陳述句】標準的主謂賓敘述結構，適合日常語感積累。";
     }
 
-    // ⭐ 終極外放發音：使用 Amazon Polly 高清真人家教美語
+    // 發音播放
     function playSmartAudio(index, rate = 1.0) {
       const item = window.parsedLessons[index];
       if (!item) return;
@@ -306,7 +332,6 @@
         if (btn) btn.innerText = originalText;
       };
 
-      // 核心發音：Amazon Polly (Joanna 美語真人音軌，強制走喇叭)
       const pollyUrl = `https://api.streamelements.com/kappa/v2/speech?voice=Joanna&text=${encodeURIComponent(text)}`;
 
       audioPlayer.src = pollyUrl;
@@ -314,11 +339,9 @@
 
       audioPlayer.onended = resetUI;
       audioPlayer.onerror = () => {
-        // 備援：Google 發音
         const googleUrl = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=en&q=${encodeURIComponent(text)}`;
         audioPlayer.src = googleUrl;
         audioPlayer.play().catch(() => {
-          // 終極備援：Safari 本地語音
           nativeFallback(text, rate, resetUI);
         });
       };
@@ -342,7 +365,7 @@
       }
     }
 
-    // 語音跟讀與發音評測
+    // 跟讀評測
     function recordAndAssess(index) {
       const item = window.parsedLessons[index];
       if (!item) return;
